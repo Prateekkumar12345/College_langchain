@@ -9,7 +9,7 @@ import uuid
 import sqlite3
 from dataclasses import dataclass, asdict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # FastAPI app
 app = FastAPI(
-    title="Integrated Academic Chatbot API",
+    title="Academic Chatbot API",
     description="Academic chatbot with college recommendation capabilities",
     version="1.0.0"
 )
@@ -39,21 +39,12 @@ app = FastAPI(
 # Request/Response models
 class ChatRequest(BaseModel):
     message: str
-    user_id: str
-    chat_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
     response: str
     is_academic: bool
     is_recommendation: bool
-    chat_id: str
     timestamp: str
-
-class ChatHistoryResponse(BaseModel):
-    user_id: str
-    chat_id: str
-    total_messages: int
-    chat_history: List[Dict[str, Any]]
 
 class UserPreferences(BaseModel):
     """User preferences extracted from conversation"""
@@ -89,29 +80,16 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Create chats table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS chats (
-                chat_id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                title TEXT DEFAULT 'New Chat',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
         # Create messages table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id TEXT,
-                user_id TEXT,
                 message_type TEXT,
                 content TEXT,
                 is_academic BOOLEAN DEFAULT TRUE,
                 is_recommendation BOOLEAN DEFAULT FALSE,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (chat_id) REFERENCES chats (chat_id)
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -119,80 +97,35 @@ class DatabaseManager:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS preferences (
                 chat_id TEXT PRIMARY KEY,
-                user_id TEXT,
                 preferences TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (chat_id) REFERENCES chats (chat_id)
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
         conn.commit()
         conn.close()
     
-    def create_chat(self, user_id: str, title: str = 'New Chat') -> str:
-        """Create a new chat"""
-        chat_id = str(uuid.uuid4())
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            'INSERT INTO chats (chat_id, user_id, title) VALUES (?, ?, ?)',
-            (chat_id, user_id, title)
-        )
-        conn.commit()
-        conn.close()
-        return chat_id
-    
-    def get_user_chats(self, user_id: str) -> List[Dict]:
-        """Get all chats for a user"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT chat_id, title, created_at, updated_at,
-                   (SELECT COUNT(*) FROM messages WHERE chat_id = c.chat_id) as message_count
-            FROM chats c 
-            WHERE user_id = ? 
-            ORDER BY updated_at DESC
-        ''', (user_id,))
-        
-        chats = cursor.fetchall()
-        conn.close()
-        
-        return [
-            {
-                'chat_id': chat[0],
-                'title': chat[1],
-                'created_at': chat[2],
-                'updated_at': chat[3],
-                'message_count': chat[4]
-            }
-            for chat in chats
-        ]
-    
-    def save_message(self, chat_id: str, user_id: str, message_type: str, content: str, is_academic: bool = True, is_recommendation: bool = False):
+    def save_message(self, chat_id: str, message_type: str, content: str, is_academic: bool = True, is_recommendation: bool = False):
         """Save a message"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
-            'INSERT INTO messages (chat_id, user_id, message_type, content, is_academic, is_recommendation) VALUES (?, ?, ?, ?, ?, ?)',
-            (chat_id, user_id, message_type, content, is_academic, is_recommendation)
-        )
-        cursor.execute(
-            'UPDATE chats SET updated_at = CURRENT_TIMESTAMP WHERE chat_id = ?',
-            (chat_id,)
+            'INSERT INTO messages (chat_id, message_type, content, is_academic, is_recommendation) VALUES (?, ?, ?, ?, ?)',
+            (chat_id, message_type, content, is_academic, is_recommendation)
         )
         conn.commit()
         conn.close()
     
-    def get_chat_messages(self, chat_id: str, user_id: str) -> List[Dict]:
+    def get_chat_messages(self, chat_id: str) -> List[Dict]:
         """Get messages for a chat"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''
             SELECT message_type, content, timestamp, is_academic, is_recommendation
             FROM messages 
-            WHERE chat_id = ? AND user_id = ? 
+            WHERE chat_id = ? 
             ORDER BY timestamp
-        ''', (chat_id, user_id))
+        ''', (chat_id,))
         messages = cursor.fetchall()
         conn.close()
         
@@ -207,24 +140,24 @@ class DatabaseManager:
             for msg in messages
         ]
     
-    def save_preferences(self, chat_id: str, user_id: str, preferences: dict):
+    def save_preferences(self, chat_id: str, preferences: dict):
         """Save user preferences"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
-            'INSERT OR REPLACE INTO preferences (chat_id, user_id, preferences) VALUES (?, ?, ?)',
-            (chat_id, user_id, json.dumps(preferences))
+            'INSERT OR REPLACE INTO preferences (chat_id, preferences) VALUES (?, ?)',
+            (chat_id, json.dumps(preferences))
         )
         conn.commit()
         conn.close()
     
-    def get_preferences(self, chat_id: str, user_id: str) -> dict:
+    def get_preferences(self, chat_id: str) -> dict:
         """Get user preferences"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT preferences FROM preferences WHERE chat_id = ? AND user_id = ?',
-            (chat_id, user_id)
+            'SELECT preferences FROM preferences WHERE chat_id = ?',
+            (chat_id,)
         )
         result = cursor.fetchone()
         conn.close()
@@ -232,32 +165,6 @@ class DatabaseManager:
         if result:
             return json.loads(result[0])
         return {}
-    
-    def update_chat_title(self, chat_id: str, title: str):
-        """Update chat title"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            'UPDATE chats SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ?',
-            (title, chat_id)
-        )
-        conn.commit()
-        conn.close()
-    
-    def clear_chat(self, chat_id: str, user_id: str):
-        """Clear chat messages"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            'DELETE FROM messages WHERE chat_id = ? AND user_id = ?',
-            (chat_id, user_id)
-        )
-        cursor.execute(
-            'DELETE FROM preferences WHERE chat_id = ? AND user_id = ?',
-            (chat_id, user_id)
-        )
-        conn.commit()
-        conn.close()
 
 class CollegeDataManager:
     def __init__(self, excel_path: str):
@@ -535,24 +442,6 @@ Only redirect to college recommendations when users specifically ask for a list 
             MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}"),
         ])
-        
-        # College recommendation system prompt - More focused
-        self.college_system_prompt = """
-You are a helpful college recommendation assistant for Indian colleges and universities. Your role is to:
-
-1. Provide specific college recommendations when users ask for college suggestions
-2. Use the provided college database and explain why each college matches their preferences
-3. Ask clarifying questions about location, course preferences, and requirements
-4. Give detailed information about colleges including admission processes, fees, and features
-
-You are activated ONLY when users specifically ask for college recommendations, suggestions, or want to see a list of colleges.
-
-Key Guidelines:
-- Provide detailed college information with reasoning
-- Use both database and knowledge to give comprehensive recommendations
-- Explain admission processes and requirements
-- Be specific about locations, courses, and college types
-"""
     
     def _create_chains(self):
         """Create processing chains"""
@@ -642,10 +531,10 @@ Key Guidelines:
             
             return any(keyword in user_input_lower for keyword in explicit_recommendation_keywords)
     
-    def extract_preferences_with_llm(self, chat_id: str, user_id: str, current_message: str) -> UserPreferences:
+    def extract_preferences_with_llm(self, chat_id: str, current_message: str) -> UserPreferences:
         """Extract user preferences using LLM"""
         try:
-            messages = self.db_manager.get_chat_messages(chat_id, user_id)
+            messages = self.db_manager.get_chat_messages(chat_id)
             conversation_history = "\n".join([
                 f"{msg['type'].title()}: {msg['content']}" for msg in messages[-10:]
             ])
@@ -658,7 +547,7 @@ Key Guidelines:
             try:
                 preferences = self.preference_parser.parse(result)
                 pref_dict = preferences.dict()
-                self.db_manager.save_preferences(chat_id, user_id, pref_dict)
+                self.db_manager.save_preferences(chat_id, pref_dict)
                 return preferences
             except OutputParserException as e:
                 logger.error(f"Parser error: {e}")
@@ -668,7 +557,7 @@ Key Guidelines:
                 
         except Exception as e:
             logger.error(f"Error extracting preferences: {e}")
-            prev_prefs = self.db_manager.get_preferences(chat_id, user_id)
+            prev_prefs = self.db_manager.get_preferences(chat_id)
             if prev_prefs:
                 return UserPreferences(**prev_prefs)
             return UserPreferences()
@@ -765,45 +654,10 @@ Key Guidelines:
         
         return json.dumps({"college_recommendations": recommendations}, indent=2, ensure_ascii=False)
     
-    def generate_chat_title(self, first_message: str) -> str:
-        """Generate chat title"""
-        try:
-            prompt = f"""
-            Create a short, meaningful title (max 30 characters) for a chat based on this first message:
-            "{first_message}"
-            
-            Focus on the main topic. Examples:
-            - "Engineering Colleges"
-            - "MBA in Delhi"
-            - "Physics Help"
-            - "Academic Writing"
-            
-            Return only the title, no quotes.
-            """
-            
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=50
-            )
-            
-            title = response.choices[0].message.content.strip().replace('"', '')
-            return title[:30] if len(title) > 30 else title
-        except:
-            return "New Chat"
-    
-    def get_response(self, message: str, user_id: str, chat_id: str = None) -> Dict[str, Any]:
+    def get_response(self, message: str, chat_id: str) -> Dict[str, Any]:
         """Main processing function that routes between academic and recommendation pipelines"""
         
         timestamp = datetime.now().isoformat()
-        
-        # Create new chat if none provided
-        if not chat_id:
-            chat_id = self.db_manager.create_chat(user_id)
-            # Generate and update title for new chat
-            title = self.generate_chat_title(message)
-            self.db_manager.update_chat_title(chat_id, title)
         
         # Check if query is academic
         is_academic = self.is_academic_query(message)
@@ -820,19 +674,18 @@ I'd be happy to help you with:
 
 Could you please ask me something related to academics or learning?"""
             
-            self.db_manager.save_message(chat_id, user_id, 'human', message, is_academic, False)
-            self.db_manager.save_message(chat_id, user_id, 'ai', response, is_academic, False)
+            self.db_manager.save_message(chat_id, 'human', message, is_academic, False)
+            self.db_manager.save_message(chat_id, 'ai', response, is_academic, False)
             
             return {
                 "response": response,
                 "is_academic": False,
                 "is_recommendation": False,
-                "chat_id": chat_id,
                 "timestamp": timestamp
             }
         
         # Save user message
-        self.db_manager.save_message(chat_id, user_id, 'human', message, is_academic, False)
+        self.db_manager.save_message(chat_id, 'human', message, is_academic, False)
         
         try:
             # Check if asking for college recommendations
@@ -840,7 +693,7 @@ Could you please ask me something related to academics or learning?"""
                 logger.info("Recommendation request detected - using college recommendation pipeline")
                 
                 # Extract preferences
-                preferences = self.extract_preferences_with_llm(chat_id, user_id, message)
+                preferences = self.extract_preferences_with_llm(chat_id, message)
                 
                 # Filter colleges from database
                 filtered_colleges = self.college_data_manager.filter_colleges_by_preferences(preferences)
@@ -880,7 +733,7 @@ Could you please ask me something related to academics or learning?"""
                 
                 # Load previous messages into memory if not already loaded
                 if len(chat_memory.chat_memory.messages) == 0:
-                    previous_messages = self.db_manager.get_chat_messages(chat_id, user_id)
+                    previous_messages = self.db_manager.get_chat_messages(chat_id)
                     for msg in previous_messages[-10:]:
                         if msg['type'] == 'human':
                             chat_memory.chat_memory.add_user_message(msg['content'])
@@ -902,54 +755,26 @@ Could you please ask me something related to academics or learning?"""
                 is_recommendation = False
             
             # Save AI response
-            self.db_manager.save_message(chat_id, user_id, 'ai', final_response, True, is_recommendation)
+            self.db_manager.save_message(chat_id, 'ai', final_response, True, is_recommendation)
             
             return {
                 "response": final_response,
                 "is_academic": True,
                 "is_recommendation": is_recommendation,
-                "chat_id": chat_id,
                 "timestamp": timestamp
             }
             
         except Exception as e:
             logger.error(f"Error generating response: {e}")
             error_response = "I apologize, but I encountered an error while processing your request. Please try again."
-            self.db_manager.save_message(chat_id, user_id, 'ai', error_response, True, False)
+            self.db_manager.save_message(chat_id, 'ai', error_response, True, False)
             
             return {
                 "response": error_response,
                 "is_academic": True,
                 "is_recommendation": False,
-                "chat_id": chat_id,
                 "timestamp": timestamp
             }
-    
-    def get_chat_history(self, chat_id: str, user_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Retrieve chat history"""
-        messages = self.db_manager.get_chat_messages(chat_id, user_id)
-        
-        if limit:
-            messages = messages[-limit:]
-        
-        formatted_history = []
-        for msg in messages:
-            formatted_history.append({
-                "message": msg["content"],
-                "type": msg["type"],
-                "timestamp": msg["timestamp"],
-                "is_academic": msg["is_academic"],
-                "is_recommendation": msg["is_recommendation"]
-            })
-        
-        return formatted_history
-    
-    def clear_chat_memory(self, chat_id: str, user_id: str):
-        """Clear chat memory and database records"""
-        if chat_id in self.chat_memories:
-            self.chat_memories[chat_id].clear()
-        
-        self.db_manager.clear_chat(chat_id, user_id)
 
 # Initialize environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -974,26 +799,25 @@ except Exception as e:
 async def root():
     """Health check endpoint"""
     return {
-        "message": "Integrated Academic Chatbot API is running!",
+        "message": "Academic Chatbot API is running!",
         "features": ["Academic Q&A", "College Recommendations"],
         "version": "1.0.0"
     }
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(request: ChatRequest):
-    """Main chat endpoint for both academic and recommendation queries"""
+async def chat_endpoint(request: ChatRequest, chat_id: str = Query(..., description="Chat ID managed by backend")):
+    """Single chat endpoint for both academic and recommendation queries"""
     
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     
-    if not request.user_id.strip():
-        raise HTTPException(status_code=400, detail="User ID cannot be empty")
+    if not chat_id.strip():
+        raise HTTPException(status_code=400, detail="Chat ID cannot be empty")
     
     try:
         result = chatbot.get_response(
             message=request.message,
-            user_id=request.user_id,
-            chat_id=request.chat_id
+            chat_id=chat_id
         )
         return ChatResponse(**result)
     
@@ -1001,106 +825,17 @@ async def chat_endpoint(request: ChatRequest):
         logger.error(f"Chat endpoint error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/chats/{user_id}")
-async def get_user_chats(user_id: str):
-    """Get all chats for a user"""
-    try:
-        chats = chatbot.db_manager.get_user_chats(user_id)
-        return {
-            "success": True,
-            "user_id": user_id,
-            "total_chats": len(chats),
-            "chats": chats
-        }
-    except Exception as e:
-        logger.error(f"Get user chats error: {e}")
-        raise HTTPException(status_code=500, detail="Error retrieving chats")
-
-@app.get("/chat-history/{chat_id}/{user_id}", response_model=ChatHistoryResponse)
-async def get_chat_history(chat_id: str, user_id: str, limit: Optional[int] = None):
-    """Get chat history for a specific chat"""
-    try:
-        history = chatbot.get_chat_history(chat_id, user_id, limit)
-        return ChatHistoryResponse(
-            user_id=user_id,
-            chat_id=chat_id,
-            total_messages=len(history),
-            chat_history=history
-        )
-    except Exception as e:
-        logger.error(f"Get chat history error: {e}")
-        raise HTTPException(status_code=500, detail="Error retrieving chat history")
-
-@app.delete("/chat-history/{chat_id}/{user_id}")
-async def clear_chat_history(chat_id: str, user_id: str):
-    """Clear chat history for a specific chat"""
-    try:
-        chatbot.clear_chat_memory(chat_id, user_id)
-        return {"message": f"Chat history cleared for chat: {chat_id}"}
-    except Exception as e:
-        logger.error(f"Clear chat history error: {e}")
-        raise HTTPException(status_code=500, detail="Error clearing chat history")
-
-@app.put("/chat/{chat_id}/title")
-async def update_chat_title(chat_id: str, title: str):
-    """Update chat title"""
-    try:
-        if not title.strip():
-            raise HTTPException(status_code=400, detail="Title cannot be empty")
-        
-        chatbot.db_manager.update_chat_title(chat_id, title.strip())
-        return {"message": "Chat title updated successfully"}
-    except Exception as e:
-        logger.error(f"Update chat title error: {e}")
-        raise HTTPException(status_code=500, detail="Error updating chat title")
-
-@app.get("/stats/{user_id}")
-async def get_user_stats(user_id: str):
-    """Get user statistics"""
-    try:
-        chats = chatbot.db_manager.get_user_chats(user_id)
-        total_messages = sum(chat['message_count'] for chat in chats)
-        
-        # Count recommendation vs academic messages
-        recommendation_count = 0
-        academic_count = 0
-        
-        for chat in chats:
-            messages = chatbot.db_manager.get_chat_messages(chat['chat_id'], user_id)
-            for msg in messages:
-                if msg['type'] == 'ai':  # Only count AI responses
-                    if msg.get('is_recommendation', False):
-                        recommendation_count += 1
-                    else:
-                        academic_count += 1
-        
-        return {
-            "user_id": user_id,
-            "total_chats": len(chats),
-            "total_messages": total_messages,
-            "academic_responses": academic_count,
-            "recommendation_responses": recommendation_count,
-            "most_recent_activity": chats[0]['updated_at'] if chats else None
-        }
-    except Exception as e:
-        logger.error(f"Get user stats error: {e}")
-        raise HTTPException(status_code=500, detail="Error retrieving user statistics")
-
 @app.get("/health")
 async def health_check():
     """Detailed health check"""
     try:
-        # Test database connection
-        test_user_id = "health_check_user"
-        chats = chatbot.db_manager.get_user_chats(test_user_id)
-        
         # Test college data
         college_count = len(chatbot.college_data_manager.colleges)
         
         return {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "service": "Integrated Academic Chatbot API",
+            "service": "Academic Chatbot API",
             "version": "1.0.0",
             "database": "connected",
             "college_data": f"{college_count} colleges loaded",
@@ -1143,7 +878,7 @@ if __name__ == "__main__":
         logger.warning(f"Excel file not found at {EXCEL_PATH}")
         logger.warning("College recommendations will use OpenAI knowledge only")
     
-    logger.info("Starting Integrated Academic Chatbot API...")
+    logger.info("Starting Academic Chatbot API...")
     logger.info("Features: Academic Q&A + College Recommendations")
     logger.info("Access the API at: http://localhost:8000")
     logger.info("API Documentation: http://localhost:8000/docs")
@@ -1155,4 +890,3 @@ if __name__ == "__main__":
         reload=True,
         log_level="info"
     )
-
